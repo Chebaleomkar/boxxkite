@@ -1,0 +1,73 @@
+name: Stress (throwaway)
+on:
+  push:
+    branches: [stress/linux]
+permissions:
+  contents: read
+jobs:
+  suite:
+    name: root suite x10 (py${{ matrix.python }}, ${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+        variant: [without-fix, with-fix]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 3
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          activate-environment: true
+      - run: uv pip install -e ".[dev]" && uv pip install -r sidecar/requirements.txt
+      - if: matrix.variant == 'without-fix'
+        run: git checkout HEAD~2 -- tests/conftest.py && git diff --stat HEAD
+      - name: root suite, parallel, random order, 10 runs
+        run: |
+          fails=0
+          for i in $(seq 1 10); do
+            seed=$RANDOM
+            pytest tests/ -q -p no:cacheprovider -n auto -rfE --randomly-seed=$seed > run.log 2>&1 && r=ok || { r=FAIL; fails=$((fails+1)); }
+            echo "run $i seed=$seed $r: $(tail -1 run.log)"; grep -E "^(FAILED|ERROR)" run.log | cut -c1-200 || true
+          done
+          echo "::notice::${{ matrix.variant }} py${{ matrix.python }}: $fails of 10 runs failed"
+  wait-probe:
+    name: proc.wait after SIGKILL (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          activate-environment: true
+      - run: uv pip install -e ".[dev]" && uv pip install -r sidecar/requirements.txt
+      - name: which sh; does sh -c fork or exec?
+        run: |
+          ls -l /bin/sh
+          sh -c 'sleep 3' & sleep 0.5; echo "children of sh pid $!:"; ps -o pid,ppid,comm --ppid $! || true; wait
+      - name: probe, 500 spawns
+        run: python .stress/sh_exec_probe.py 500
+      - name: the test alone, 300x serial
+        run: |
+          sed 's/^async def test_signal_process_group_never_kills_callers_own_group():/async def test_signal_process_group_never_kills_callers_own_group(repeat_i):/' tests/test_sidecar_process_restart_survival.py > tests/test_zz_repeat_signal.py
+          REPEAT=300 PYTHONPATH=.stress pytest tests/test_zz_repeat_signal.py -k never_kills -q -p repeat -p no:randomly -p no:xdist 2>&1 | tail -3
+      - name: the test alone, 300x across 4 workers
+        if: ${{ !cancelled() }}
+        run: REPEAT=300 PYTHONPATH=.stress pytest tests/test_zz_repeat_signal.py -k never_kills -q -p repeat -p no:randomly -n 4 2>&1 | tail -3
+      - name: pty-exec test, 2000x across 4 workers
+        if: ${{ !cancelled() }}
+        run: |
+          sed 's/^def test_pty_exec_command_is_never_shell_interpreted(monkeypatch):/def test_pty_exec_command_is_never_shell_interpreted(monkeypatch, repeat_i):/' tests/test_sidecar_pty_exec.py > tests/test_zz_repeat_pty.py
+          REPEAT=2000 PYTHONPATH=.stress pytest tests/test_zz_repeat_pty.py -k never_shell -q -p repeat -p no:randomly -n 4 2>&1 | tail -3
