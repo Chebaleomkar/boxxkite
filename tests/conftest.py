@@ -9,6 +9,7 @@ FastAPI's TestClient, its containing directory needs to be on `sys.path` so
 
 import shutil
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -78,3 +79,18 @@ def _close_sidecar_clients():
             "test left the sidecar app lifespan open; use `with TestClient(...)` "
             "or open_sidecar_client() so shutdown runs"
         )
+
+
+@pytest.fixture(autouse=True)
+def _own_background_process_marker(monkeypatch):
+    """Give each test its own background-process marker value.
+
+    The sidecar's orphan sweep (run on every app startup, and directly by
+    some tests) kills every process on the machine whose environment holds
+    the marker. With tests running in parallel, one test's sweep would kill
+    the processes another test deliberately left running. A per-test value
+    limits each sweep to its own test's processes.
+    """
+    main = sys.modules.get("main")
+    if main is not None:
+        monkeypatch.setattr(main, "BACKGROUND_PROCESS_MARKER_VALUE", f"test-{uuid.uuid4().hex}")
