@@ -1,0 +1,3 @@
+bench ci/4-sdk-js-bun 1
+bench ci/4-sdk-js-bun 2
+bench ci/4-sdk-js-bun 3
